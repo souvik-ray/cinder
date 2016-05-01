@@ -33,6 +33,7 @@ from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
 from cinder.openstack.common import fileutils
 from cinder.volume import driver
+from cinder.api.metricutil import ReportMetrics
 
 try:
     import rados
@@ -525,6 +526,7 @@ class RBDDriver(driver.VolumeDriver):
 
         LOG.debug("clone created successfully")
 
+    @ReportMetrics("rbd-create-volume", True)
     def create_volume(self, volume):
         """Creates a logical volume."""
         size = int(volume['size']) * units.Gi
@@ -654,6 +656,7 @@ class RBDDriver(driver.VolumeDriver):
             if g_parent:
                 self._delete_clone_parent_refs(client, g_parent, g_parent_snap)
 
+    @ReportMetrics("rbd-delete-volume", True)
     def delete_volume(self, volume, context):
         """Deletes a logical volume."""
         # NOTE(dosaboy): this was broken by commit cbe1d5f. Ensure names are
@@ -782,6 +785,7 @@ class RBDDriver(driver.VolumeDriver):
         """Removes an export for a logical volume."""
         pass
 
+    @ReportMetrics("rbd-initialize_connection", True)
     def initialize_connection(self, volume, connector):
         hosts, ports = self._get_mon_addrs()
         data = {
@@ -799,6 +803,7 @@ class RBDDriver(driver.VolumeDriver):
         LOG.debug('connection data: %s', data)
         return data
 
+    @ReportMetrics("rbd-terminate_connection", True)
     def terminate_connection(self, volume, connector, **kwargs):
         pass
 
@@ -917,6 +922,7 @@ class RBDDriver(driver.VolumeDriver):
                                       image_meta, tmp_file)
         os.unlink(tmp_file)
 
+    @ReportMetrics("rbd-backup-volume", True)
     def backup_volume(self, context, backup, backup_service):
         """Create a new backup from an existing volume."""
         volume = self.db.volume_get(context, backup['volume_id'])
@@ -931,6 +937,7 @@ class RBDDriver(driver.VolumeDriver):
 
         LOG.debug("volume backup complete.")
 
+    @ReportMetrics("rbd-restore-backup", True)
     def restore_backup(self, context, backup, volume, backup_service):
         """Restore an existing backup to a new or existing volume."""
         with RBDVolumeProxy(self, volume['name'],
