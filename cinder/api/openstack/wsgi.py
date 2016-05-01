@@ -27,7 +27,7 @@ from oslo_utils import excutils
 import six
 import webob
 
-from cinder.api.metricutil import MetricUtil, ReportLatency
+from cinder.api.metricutil import MetricUtil, ReportMetrics
 from cinder import exception
 from cinder import i18n
 from cinder.i18n import _, _LE, _LI
@@ -1004,7 +1004,7 @@ class Resource(wsgi.Application):
         return response
 
 
-    @ReportLatency("ProcessStack")
+    @ReportMetrics("ProcessStack")
     def _process_stack(self, request, action, action_args,
                        content_type, body, accept):
         """Implement the processing stack."""
