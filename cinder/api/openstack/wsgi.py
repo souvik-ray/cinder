@@ -963,8 +963,6 @@ class Resource(wsgi.Application):
         LOG.info(_LI("%(method)s %(url)s"),
                  {"method": request.method,
                   "url": request.url})
-        metricUtil = MetricUtil()
-        metrics = metricUtil.initialize_thread_local_metrics(request)
         # Identify the action, its arguments, and the requested
         # content type
         action_args = self.get_action_args(request.environ)
@@ -977,33 +975,8 @@ class Resource(wsgi.Application):
         #            function.  If we try to audit __call__(), we can
         #            run into troubles due to the @webob.dec.wsgify()
         #            decorator.
-        success = 0
-        error = 0
-        fault = 0
-        try:
-            response = self._process_stack(request, action, action_args,
+        return self._process_stack(request, action, action_args,
                                    content_type, body, accept)
-            success = 1
-        except Exception as e:
-            LOG.exception('Exception in cinderAPI: %s', e)
-            fault = 1
-            try:
-                if e.code < 500 and e.code > 399:
-                    error = 1
-            except AttributeError:
-                LOG.warn("Above Exception does not have a code")
-            raise e
-        finally:
-            metrics.add_count("fault", fault)
-            metrics.add_count("error", error)
-            metrics.add_count("success", success)
-            metricUtil.closeMetrics(request)
-        # As of now the service logs contain all the request information and the latencies of the call.
-        # Metrics object will contain latency automatically (calculated between initializationa and closing
-        # TODO. 1) Add timer count for each methods
-        #       2) Add metric for failures, success error and faults by parsing the response
-        return response
-
 
 
     def _process_stack(self, request, action, action_args,
