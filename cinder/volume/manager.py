@@ -68,7 +68,7 @@ from cinder.volume.flows.manager import manage_existing
 from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import utils as vol_utils
 from cinder.volume import volume_types
-from cinder.api.metricutil import CinderVolumeMetricsWrapper
+from cinder.api.metricutil import CinderVolumeMetricsWrapper, MetricUtil
 
 from eventlet import greenpool
 
@@ -547,6 +547,7 @@ class VolumeManager(manager.SchedulerDependentManager):
                 self.driver.unmanage(volume_ref)
             else:
                 self.driver.delete_volume(volume_ref, context)
+
         except exception.VolumeIsBusy:
             LOG.error(_LE("Cannot delete volume %s: volume is busy"),
                       volume_ref['id'])
@@ -554,6 +555,7 @@ class VolumeManager(manager.SchedulerDependentManager):
             # record to avoid user confusion.
             self._clear_db(context, is_migrating_dest, volume_ref,
                            'available')
+            #TODO Volume Busy metric
             return True
         except Exception:
             with excutils.save_and_reraise_exception():
@@ -588,7 +590,7 @@ class VolumeManager(manager.SchedulerDependentManager):
 
             self.db.volume_destroy(context, volume_id)
             terminated_at = volume_ref['terminated_at']
-            now = timeutils.utcnow()
+            now = now = timeutils.utcnow()
             MetricUtil().report_timing_metric_utc_time("TerminatingToDeleted", now, terminated_at)
             LOG.info(_LI("volume %s: deleted successfully"), volume_ref['id'])
 
