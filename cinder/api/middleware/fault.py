@@ -24,6 +24,7 @@ from cinder import exception
 from cinder.i18n import _, _LE, _LI
 from cinder import utils
 from cinder import wsgi as base_wsgi
+from metrics.metric_util import MetricUtil
 
 
 LOG = logging.getLogger(__name__)
@@ -73,7 +74,37 @@ class FaultWrapper(base_wsgi.Middleware):
 
     @webob.dec.wsgify(RequestClass=wsgi.Request)
     def __call__(self, req):
+        response = None
+        metricUtil = MetricUtil()
+        metrics = metricUtil.initialize_thread_local_metrics("/var/log/cinder/service.log", "CinderAPI")
+        response = None
         try:
-            return req.get_response(self.application)
+            response = req.get_response(self.application)
         except Exception as ex:
-            return self._error(ex, req)
+            response = self._error(ex, req)
+        finally:
+            success = 0
+            fault = 0
+            error = 0
+            try:
+                status = response.status_int
+                metrics.add_property("Status", status)
+                if status > 399 and status < 500:
+                    error = 1
+                elif status > 499:
+                    fault = 1
+                else:
+                    success = 1
+            except AttributeError as e:
+                LOG.exception(e)
+            metrics.add_count("fault", fault)
+            metrics.add_count("error", error)
+            metrics.add_count("success", success)
+            metrics.add_property("PathInfo", req.path_info)
+            context = req.environ.get('cinder.context')
+            metrics.add_property("TenantId", context.project_id)
+            metrics.add_property("RemoteAddress", context.remote_address)
+            metrics.add_property("RequestId", context.request_id)
+            metrics.close()
+
+        return response

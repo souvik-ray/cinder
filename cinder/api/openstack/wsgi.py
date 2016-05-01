@@ -27,7 +27,7 @@ from oslo_utils import excutils
 import six
 import webob
 
-from cinder.api.metricutil import MetricUtil
+from cinder.api.metricutil import MetricUtil, ReportLatency
 from cinder import exception
 from cinder import i18n
 from cinder.i18n import _, _LE, _LI
@@ -963,8 +963,8 @@ class Resource(wsgi.Application):
         LOG.info(_LI("%(method)s %(url)s"),
                  {"method": request.method,
                   "url": request.url})
-        metricUtil = MetricUtil()
-        metrics = metricUtil.initialize_thread_local_metrics(request)
+        #metricUtil = MetricUtil()
+        #metrics = metricUtil.initialize_thread_local_metrics(request)
         # Identify the action, its arguments, and the requested
         # content type
         action_args = self.get_action_args(request.environ)
@@ -993,11 +993,10 @@ class Resource(wsgi.Application):
             except AttributeError:
                 LOG.warn("Above Exception does not have a code")
             raise e
-        finally:
-            metrics.add_count("fault", fault)
-            metrics.add_count("error", error)
-            metrics.add_count("success", success)
-            metricUtil.closeMetrics(request)
+            #metrics.add_count("fault", fault)
+            #metrics.add_count("error", error)
+            #metrics.add_count("success", success)
+            #metricUtil.closeMetrics(request)
         # As of now the service logs contain all the request information and the latencies of the call.
         # Metrics object will contain latency automatically (calculated between initializationa and closing
         # TODO. 1) Add timer count for each methods
@@ -1005,7 +1004,7 @@ class Resource(wsgi.Application):
         return response
 
 
-
+    @ReportLatency("ProcessStack")
     def _process_stack(self, request, action, action_args,
                        content_type, body, accept):
         """Implement the processing stack."""
@@ -1017,6 +1016,7 @@ class Resource(wsgi.Application):
             # Removing this because we are not sure if this is going to fetch the method name
             metrics = MetricUtil().fetch_thread_local_metrics()
             metrics.add_property("OperationName", meth.__name__)
+            metrics.add_property("Action", action)
 
             # Add method name to the service logs. For example CreateVolume, DescribeVolume etc.
         except (AttributeError, TypeError):
