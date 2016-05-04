@@ -705,6 +705,8 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
             # status isn't updated correctly (aka it will likely be stuck in
             # 'building' if this fails)??
             volume_ref = self.db.volume_update(context, volume_id, update)
+            created_at = volume_ref['created_at']
+            MetricUtil().report_timing_metric_utc_time("CreatingToAvailable", launched_at, created_at)
             # Now use the parent to notify.
             super(CreateVolumeOnFinishTask, self).execute(context, volume_ref)
 
@@ -712,8 +714,6 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
             LOG.exception(_LE("Failed updating volume %(volume_id)s with "
                               "%(update)s"), {'volume_id': volume_id,
                                               'update': update})
-        created_at = volume_ref['created_at']
-        MetricUtil().report_timing_metric_utc_time("CreatingToAvailable", launched_at, created_at)
         # Even if the update fails, the volume is ready.
         LOG.info(_LI("Volume %(volume_name)s (%(volume_id)s): "
                      "created successfully"),
