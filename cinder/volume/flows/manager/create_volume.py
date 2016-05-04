@@ -703,6 +703,8 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
             # status isn't updated correctly (aka it will likely be stuck in
             # 'building' if this fails)??
             volume_ref = self.db.volume_update(context, volume_id, update)
+            created_at = volume_ref['created_at']
+            MetricUtil().report_timing_metric_utc_time("CreatingToAvailable", launched_at, created_at)
             # Now use the parent to notify.
             super(CreateVolumeOnFinishTask, self).execute(context, volume_ref)
         except exception.CinderException:

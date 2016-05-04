@@ -587,6 +587,9 @@ class VolumeManager(manager.SchedulerDependentManager):
             self.db.volume_glance_metadata_delete_by_volume(context, volume_id)
 
             self.db.volume_destroy(context, volume_id)
+            terminated_at = volume_ref['terminated_at']
+            now = timeutils.utcnow()
+            MetricUtil().report_timing_metric_utc_time("TerminatingToDeleted", now, terminated_at)
             LOG.info(_LI("volume %s: deleted successfully"), volume_ref['id'])
 
         # If deleting source/destination volume in a migration, we should
