@@ -28,6 +28,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
+from oslo_utils import encodeutils
 import six
 
 from cinder import context
@@ -151,7 +152,7 @@ class API(base.Base):
         self.availability_zones_last_fetched = None
         self.key_manager = keymgr.API()
         super(API, self).__init__(db_driver)
-        vol_init()
+        self.vol_init()
 
     def list_availability_zones(self, enable_cache=False):
         """Describe the known availability zones
@@ -1584,8 +1585,7 @@ class API(base.Base):
                                       {'status': 'in-use'})
                 return
 
-            #self._notify_about_volume_usage(context, volume,
-                                            "attach.start")
+            #self._notify_about_volume_usage(context, volume, "attach.start")
             values = {'volume_id': volume_id,
                       'attach_status': 'attaching', }
 
