@@ -65,10 +65,28 @@ az_cache_time_opt = cfg.IntOpt('az_cache_duration',
                                     'memory for the provided duration in '
                                     'seconds')
 
+rbd_opts = [
+    cfg.StrOpt('rbd_pool',
+               default='rbd',
+               help='The RADOS pool where rbd volumes are stored'),
+    cfg.StrOpt('rbd_user',
+               default=None,
+               help='The RADOS client name for accessing rbd volumes '
+                    '- only set when using cephx authentication'),
+    cfg.StrOpt('rbd_ceph_conf',
+               default='',  # default determined by librados
+               help='Path to the ceph configuration file'),
+    cfg.StrOpt('rbd_secret_uuid',
+               default=None,
+               help='The libvirt uuid of the secret for the rbd_user '
+                    'volumes')
+]
+
 CONF = cfg.CONF
 CONF.register_opt(volume_host_opt)
 CONF.register_opt(volume_same_az_opt)
 CONF.register_opt(az_cache_time_opt)
+CONF.register_opts(rbd_opts)
 
 CONF.import_opt('glance_core_properties', 'cinder.image.glance')
 
@@ -109,6 +127,21 @@ def check_policy(context, action, target_obj=None):
 class API(base.Base):
     """API for interacting with the volume manager."""
 
+    def vol_init(self):
+        self.rbd_pool = CONF.rbd_pool
+        self.rbd_user = CONF.rbd_user
+        self.rbd_ceph_conf = CONF.rbd_ceph_conf
+        self.rbd_secret_uuid = CONF.rbd_secret_uuid
+
+        if self.rbd_pool is not None:
+            self.rbd_pool = encodeutils.safe_encode(self.rbd_pool)
+        
+        if self.rbd_user is not None:
+            self.rbd_user = encodeutils.safe_encode(self.rbd_user)
+        
+        if self.rbd_ceph_conf is not None:
+            self.rbd_ceph_conf = encodeutils.safe_encode(self.rbd_ceph_conf)
+
     def __init__(self, db_driver=None, image_service=None):
         self.image_service = (image_service or
                               glance.get_default_image_service())
@@ -118,6 +151,7 @@ class API(base.Base):
         self.availability_zones_last_fetched = None
         self.key_manager = keymgr.API()
         super(API, self).__init__(db_driver)
+        vol_init()
 
     def list_availability_zones(self, enable_cache=False):
         """Describe the known availability zones
@@ -559,32 +593,25 @@ class API(base.Base):
             raise exception.InvalidVolumeAttachMode(mode=mode,
                                                     volume_id=volume['id'])
 
-        return self.volume_rpcapi.attach_volume(context,
-                                                volume,
-                                                instance_uuid,
-                                                host_name,
-                                                mountpoint,
-                                                mode)
+        return self.attach_volume(context, volume, instance_uuid,
+                                  host_name, mountpoint, mode)
 
     @ReportMetrics("volume-api-detach")
     @wrap_check_policy
     def detach(self, context, volume, attachment_id):
-        return self.volume_rpcapi.detach_volume(context, volume,
-                                                attachment_id)
+        return self.detach_volume(context, volume, attachment_id)
 
     @wrap_check_policy
     def initialize_connection(self, context, volume, connector):
         LOG.debug('initialize connection for volume-id: %(volid)s, and '
                   'connector: %(connector)s.', {'volid': volume['id'],
                                                 'connector': connector})
-        return self.volume_rpcapi.initialize_connection(context,
-                                                        volume,
-                                                        connector)
+        return self._initialize_connection(context, volume, connector)
 
     @wrap_check_policy
     def terminate_connection(self, context, volume, connector, force=False):
         self.unreserve_volume(context, volume)
-        return self.volume_rpcapi.terminate_connection(context,
+        return self._terminate_connection(context,
                                                        volume,
                                                        connector,
                                                        force)
@@ -1378,7 +1405,279 @@ class API(base.Base):
                                               volume['id'],
                                               request_spec=request_spec)
         return volume
+    
+    def _ceph_args(self):
+        args = []
+        if self.rbd_user:
+            args.extend(['--id', self.rbd_user])
+        if self.rbd_ceph_conf:
+            args.extend(['--conf', self.rbd_ceph_conf])
+        return args
 
+    def _get_mon_addrs(self):
+        args = ['ceph', 'mon', 'dump', '--format=json']
+        args.extend(self._ceph_args())
+        out, _ = self._execute(*args)
+        lines = out.split('\n')
+        if lines[0].startswith('dumped monmap epoch'):
+            lines = lines[1:]
+        monmap = json.loads('\n'.join(lines))
+        addrs = [mon['addr'] for mon in monmap['mons']]
+        hosts = []
+        ports = []
+        for addr in addrs:
+            host_port = addr[:addr.rindex('/')]
+            host, port = host_port.rsplit(':', 1)
+            hosts.append(host.strip('[]'))
+            ports.append(port)
+        return hosts, ports
+
+    def _initialize_connection_(self, volume, connector):
+        hosts, ports = self._get_mon_addrs()
+        data = {
+            'driver_volume_type': 'rbd',
+            'data': {
+                'name': '%s/%s' % (self.rbd_pool,
+                                   volume['name']),
+                'hosts': hosts,
+                'ports': ports,
+                'auth_enabled': (self.rbd_user is not None),
+                'auth_username': self.rbd_user,
+                'secret_type': 'ceph',
+                'secret_uuid': self.rbd_secret_uuid, }
+        }
+        LOG.debug('connection data: %s', data)
+        return data
+
+    def _initialize_connection(self, context, volume_id, connector):
+        """Prepare volume for connection from host represented by connector.
+
+        This method calls the driver initialize_connection and returns
+        it to the caller.  The connector parameter is a dictionary with
+        information about the host that will connect to the volume in the
+        following format::
+
+            {
+                'ip': ip,
+                'initiator': initiator,
+            }
+
+        ip: the ip address of the connecting machine
+
+        initiator: the iscsi initiator name of the connecting machine.
+        This can be None if the connecting machine does not support iscsi
+        connections.
+
+        driver is responsible for doing any necessary security setup and
+        returning a connection_info dictionary in the following format::
+
+            {
+                'driver_volume_type': driver_volume_type,
+                'data': data,
+            }
+
+        driver_volume_type: a string to identify the type of volume.  This
+                           can be used by the calling code to determine the
+                           strategy for connecting to the volume. This could
+                           be 'iscsi', 'rbd', 'sheepdog', etc.
+
+        data: this is the data that the calling code will use to connect
+              to the volume. Keep in mind that this will be serialized to
+              json in various places, so it should not contain any non-json
+              data types.
+        """
+
+        volume = self.db.volume_get(context, volume_id)
+
+        # This is not used right now. Chirag
+        #initiator_data = self._get_driver_initiator_data(context, connector)
+        #try:
+        #    if initiator_data:
+        #        conn_info = self.driver.initialize_connection(volume,
+        #                                                      connector,
+        #                                                      initiator_data)
+        #    else:
+        #        conn_info = self.driver.initialize_connection(volume,
+        #                                                      connector)
+        try:
+            conn_info = self._initialize_connection_(volume, connector)
+        except Exception as err:
+            err_msg = (_('Unable to fetch connection information from '
+                         'backend: %(err)s') % {'err': err})
+            LOG.error(err_msg)
+            raise exception.VolumeBackendAPIException(data=err_msg)
+
+        # This doesn't seem to be used. Chirag
+        #initiator_update = conn_info.get('initiator_update', None)
+        #if initiator_update:
+        #    self._save_driver_initiator_data(context, connector,
+        #                                     initiator_update)
+        #    del conn_info['initiator_update']
+
+        # Add qos_specs to connection info
+        typeid = volume['volume_type_id']
+        specs = None
+        if typeid:
+            res = volume_types.get_volume_type_qos_specs(typeid)
+            qos = res['qos_specs']
+            # only pass qos_specs that is designated to be consumed by
+            # front-end, or both front-end and back-end.
+            if qos and qos.get('consumer') in ['front-end', 'both']:
+                specs = qos.get('specs')
+        qos_spec = dict(qos_specs=specs)
+        conn_info['data'].update(qos_spec)
+
+        # Add access_mode to connection info
+        volume_metadata = self.db.volume_admin_metadata_get(context.elevated(),
+                                                            volume_id)
+        if conn_info['data'].get('access_mode') is None:
+            access_mode = volume_metadata.get('attached_mode')
+            if access_mode is None:
+                # NOTE(zhiyan): client didn't call 'os-attach' before
+                access_mode = ('ro'
+                               if volume_metadata.get('readonly') == 'True'
+                               else 'rw')
+            conn_info['data']['access_mode'] = access_mode
+
+        return conn_info
+    
+    def _terminate_connection(self, context, volume_id, connector, force=False):
+        """Cleanup connection from host represented by connector.
+
+        The format of connector is the same as for initialize_connection.
+        """
+    
+    def attach_volume(self, context, volume_id, instance_uuid, host_name,
+                      mountpoint, mode):
+        """Updates db to show volume is attached."""
+        #Removing this as we won't have a case where multiple instances attach to a single volume. Chirag
+        #@utils.synchronized(volume_id, external=True)
+        def do_attach():
+            # check the volume status before attaching
+            volume = self.db.volume_get(context, volume_id)
+            volume_metadata = self.db.volume_admin_metadata_get(
+                context.elevated(), volume_id)
+            if volume['status'] == 'attaching':
+                if (volume_metadata.get('attached_mode') and
+                    volume_metadata.get('attached_mode') != mode):
+                    msg = _("being attached by different mode")
+                    raise exception.InvalidVolume(reason=msg)
+
+            if (volume['status'] == 'in-use' and not volume['multiattach']
+               and not volume['migration_status']):
+                msg = _("volume is already attached")
+                raise exception.InvalidVolume(reason=msg)
+
+            attachment = None
+            host_name_sanitized = utils.sanitize_hostname(
+                host_name) if host_name else None
+            if instance_uuid:
+                attachment = \
+                    self.db.volume_attachment_get_by_instance_uuid(
+                        context, volume_id, instance_uuid)
+            else:
+                attachment = \
+                    self.db.volume_attachment_get_by_host(context, volume_id,
+                                                          host_name_sanitized)
+            if attachment is not None:
+                self.db.volume_update(context, volume_id,
+                                      {'status': 'in-use'})
+                return
+
+            #self._notify_about_volume_usage(context, volume,
+                                            "attach.start")
+            values = {'volume_id': volume_id,
+                      'attach_status': 'attaching', }
+
+            attachment = self.db.volume_attach(context.elevated(), values)
+            volume_metadata = self.db.volume_admin_metadata_update(
+                context.elevated(), volume_id,
+                {"attached_mode": mode}, False)
+
+            attachment_id = attachment['id']
+            if instance_uuid and not uuidutils.is_uuid_like(instance_uuid):
+                self.db.volume_attachment_update(context, attachment_id,
+                                                 {'attach_status':
+                                                  'error_attaching'})
+                raise exception.InvalidUUID(uuid=instance_uuid)
+
+            volume = self.db.volume_get(context, volume_id)
+
+            if volume_metadata.get('readonly') == 'True' and mode != 'ro':
+                self.db.volume_update(context, volume_id,
+                                      {'status': 'error_attaching'})
+                raise exception.InvalidVolumeAttachMode(mode=mode,
+                                                        volume_id=volume_id)
+
+            volume = self.db.volume_attached(context.elevated(),
+                                             attachment_id,
+                                             instance_uuid,
+                                             host_name_sanitized,
+                                             mountpoint,
+                                             mode)
+            if volume['migration_status']:
+                self.db.volume_update(context, volume_id,
+                                      {'migration_status': None})
+            #self._notify_about_volume_usage(context, volume, "attach.end")
+            return self.db.volume_attachment_get(context, attachment_id)
+        return do_attach()
+    
+    # Removing the lock as it is required only in case of shared volumes. Chirag
+    #@locked_detach_operation
+    def detach_volume(self, context, volume_id, attachment_id=None):
+        """Updates db to show volume is detached."""
+        # TODO(vish): refactor this into a more general "unreserve"
+        attachment = None
+        if attachment_id:
+            try:
+                attachment = self.db.volume_attachment_get(context,
+                                                           attachment_id)
+            except exception.VolumeAttachmentNotFound:
+                LOG.info(_LI("Volume detach called, but volume %(id)s not "
+                             "attached."),
+                         {'id': volume_id})
+                # We need to make sure the volume status is set to the correct
+                # status.  It could be in detaching status now, and we don't
+                # want to leave it there.
+                self.db.volume_detached(context, volume_id, attachment_id)
+                return
+        else:
+            # We can try and degrade gracefuly here by trying to detach
+            # a volume without the attachment_id here if the volume only has
+            # one attachment.  This is for backwards compatibility.
+            attachments = self.db.volume_attachment_get_used_by_volume_id(
+                context, volume_id)
+            if len(attachments) > 1:
+                # There are more than 1 attachments for this volume
+                # we have to have an attachment id.
+                msg = _("Volume %(id)s is attached to more than one instance"
+                        ".  A valid attachment_id must be passed to detach"
+                        " this volume") % {'id': volume_id}
+                LOG.error(msg)
+                raise exception.InvalidVolume(reason=msg)
+            elif len(attachments) == 1:
+                attachment = attachments[0]
+            else:
+                # there aren't any attachments for this volume.
+                # so set the status to available and move on.
+                LOG.info(_LI("Volume detach called, but volume %(id)s not "
+                             "attached."),
+                         {'id': volume_id})
+                self.db.volume_update(context, volume_id,
+                                      {'status': 'available',
+                                       'attach_status': 'detached'})
+                return
+
+        volume = self.db.volume_get(context, volume_id)
+        #self._notify_about_volume_usage(context, volume, "detach.start")
+
+        self.db.volume_detached(context.elevated(), volume_id,
+                                attachment.get('id'))
+        self.db.volume_admin_metadata_delete(context.elevated(), volume_id,
+                                             'attached_mode')
+
+        #volume = self.db.volume_get(context, volume_id)
+        #self._notify_about_volume_usage(context, volume, "detach.end")
 
 class HostAPI(base.Base):
     def __init__(self):
