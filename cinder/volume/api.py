@@ -22,6 +22,7 @@ Handles all requests relating to volumes.
 import collections
 import datetime
 import functools
+import json
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -87,7 +88,7 @@ CONF = cfg.CONF
 CONF.register_opt(volume_host_opt)
 CONF.register_opt(volume_same_az_opt)
 CONF.register_opt(az_cache_time_opt)
-CONF.register_opts(rbd_opts)
+CONF.register_opts(rbd_opts, group="ceph")
 
 CONF.import_opt('glance_core_properties', 'cinder.image.glance')
 
@@ -129,10 +130,11 @@ class API(base.Base):
     """API for interacting with the volume manager."""
 
     def vol_init(self):
-        self.rbd_pool = CONF.rbd_pool
-        self.rbd_user = CONF.rbd_user
-        self.rbd_ceph_conf = CONF.rbd_ceph_conf
-        self.rbd_secret_uuid = CONF.rbd_secret_uuid
+        self.vol_conf = CONF._get("ceph") 
+        self.rbd_pool = self.vol_conf.rbd_pool
+        self.rbd_user = self.vol_conf.rbd_user
+        self.rbd_ceph_conf = self.vol_conf.rbd_ceph_conf
+        self.rbd_secret_uuid = self.vol_conf.rbd_secret_uuid
 
         if self.rbd_pool is not None:
             self.rbd_pool = encodeutils.safe_encode(self.rbd_pool)
@@ -594,28 +596,25 @@ class API(base.Base):
             raise exception.InvalidVolumeAttachMode(mode=mode,
                                                     volume_id=volume['id'])
 
-        return self.attach_volume(context, volume, instance_uuid,
+        return self.attach_volume(context, volume['id'], instance_uuid,
                                   host_name, mountpoint, mode)
 
     @ReportMetrics("volume-api-detach")
     @wrap_check_policy
     def detach(self, context, volume, attachment_id):
-        return self.detach_volume(context, volume, attachment_id)
+        return self.detach_volume(context, volume['id'], attachment_id)
 
     @wrap_check_policy
     def initialize_connection(self, context, volume, connector):
         LOG.debug('initialize connection for volume-id: %(volid)s, and '
                   'connector: %(connector)s.', {'volid': volume['id'],
                                                 'connector': connector})
-        return self._initialize_connection(context, volume, connector)
+        return self._initialize_connection(context, volume['id'], connector)
 
     @wrap_check_policy
     def terminate_connection(self, context, volume, connector, force=False):
         self.unreserve_volume(context, volume)
-        return self._terminate_connection(context,
-                                                       volume,
-                                                       connector,
-                                                       force)
+        return self._terminate_connection(context, volume['id'], connector, force)
 
     @wrap_check_policy
     def accept_transfer(self, context, volume, new_user, new_project):
@@ -1418,7 +1417,7 @@ class API(base.Base):
     def _get_mon_addrs(self):
         args = ['ceph', 'mon', 'dump', '--format=json']
         args.extend(self._ceph_args())
-        out, _ = self._execute(*args)
+        out, _ = utils.execute(*args)
         lines = out.split('\n')
         if lines[0].startswith('dumped monmap epoch'):
             lines = lines[1:]
