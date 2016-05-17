@@ -18,7 +18,7 @@
 
 """Implementation of SQLAlchemy backend."""
 
-
+import collections
 import datetime as dt
 import functools
 import sys
@@ -47,13 +47,13 @@ from sqlalchemy.sql.expression import true
 from sqlalchemy.sql import func
 
 from cinder.common import sqlalchemyutils
+from cinder import db
 from cinder.db.sqlalchemy import models
 from cinder import exception
 from cinder.i18n import _, _LW, _LE, _LI
 from cinder.api.metricutil import ReportMetrics
 
 CONF = cfg.CONF
-CONF.import_group("profiler", "cinder.service")
 LOG = logging.getLogger(__name__)
 
 options.set_defaults(CONF, connection='sqlite:///$state_path/cinder.sqlite')
@@ -72,6 +72,11 @@ def _create_facade_lazily():
                 **dict(CONF.database.iteritems())
             )
 
+            # NOTE(geguileo): To avoid a cyclical dependency we import the
+            # group here.  Dependency cycle is objects.base requires db.api,
+            # which requires db.sqlalchemy.api, which requires service which
+            # requires objects.base
+            CONF.import_group("profiler", "cinder.service")
             if CONF.profiler.profiler_enabled:
                 if CONF.profiler.trace_sqlalchemy:
                     osprofiler.sqlalchemy.add_tracing(sqlalchemy,
@@ -3701,3 +3706,45 @@ def driver_initiator_data_get(context, initiator, namespace):
             filter_by(initiator=initiator).\
             filter_by(namespace=namespace).\
             all()
+
+def condition_db_filter(model, field, value):
+    """Create matching filter.
+
+    If value is an iterable other than a string, any of the values is
+    a valid match (OR), so we'll use SQL IN operator.
+
+    If it's not an iterator == operator will be used.
+    """
+    orm_field = getattr(model, field)
+    # For values that must match and are iterables we use IN
+    if (isinstance(value, collections.Iterable) and
+            not isinstance(value, six.string_types)):
+        # We cannot use in_ when one of the values is None
+        if None not in value:
+            return orm_field.in_(value)
+
+        return or_(orm_field == v for v in value)
+
+    # For values that must match and are not iterables we use ==
+    return orm_field == value
+
+@_retry_on_deadlock
+@require_context
+def conditional_update(context, model, values, expected_values, filters=(),
+                       include_deleted='no', project_only=False):
+    """Compare-and-swap conditional update SQLAlchemy implementation."""
+    # Provided filters will become part of the where clause
+    where_conds = list(filters)
+
+    # Build where conditions with operators ==, !=, NOT IN and IN
+    for field, condition in expected_values.items():
+        if not isinstance(condition, db.Condition):
+            condition = db.Condition(condition, field)
+        where_conds.append(condition.get_filter(model, field))
+
+    query = model_query(context, model, read_deleted=include_deleted,
+                        project_only=project_only)
+
+    # Return True if we were able to change any DB entry, False otherwise
+    result = query.filter(*where_conds).update(values, synchronize_session=False)
+    return 0 != result

@@ -129,6 +129,8 @@ def check_policy(context, action, target_obj=None):
 class API(base.Base):
     """API for interacting with the volume manager."""
 
+    AVAILABLE_MIGRATION_STATUS = (None, 'deleting', 'error', 'success')
+
     def vol_init(self):
         self.vol_conf = CONF._get("ceph") 
         self.rbd_pool = self.vol_conf.rbd_pool
@@ -498,6 +500,9 @@ class API(base.Base):
         rv = self.db.volume_get(context, volume_id)
         return dict(rv.iteritems())
 
+    def _get_volume_(self, context, volume_id):
+        return objects.Volume.get_by_id(context, volume_id)
+
     def get_all_snapshots(self, context, search_opts=None):
         check_policy(context, 'get_all_snapshots')
 
@@ -525,24 +530,24 @@ class API(base.Base):
             snapshots = results
         return snapshots
 
+    # This conditional update is enough to ensure that there are no race conditions,
+    # unless we support multiattach
     @wrap_check_policy
     def reserve_volume(self, context, volume):
-        # NOTE(jdg): check for Race condition bug 1096983
-        # explicitly get updated ref and check
-        volume = self.db.volume_get(context, volume['id'])
-        if volume['status'] == 'available':
-            self.update(context, volume, {"status": "attaching"})
-        elif volume['status'] == 'in-use':
-            if volume['multiattach']:
-                self.update(context, volume, {"status": "attaching"})
-            else:
-                msg = _("Volume must be multiattachable to reserve again.")
-                LOG.error(msg)
-                raise exception.InvalidVolume(reason=msg)
-        else:
-            msg = _("Volume status must be available to reserve.")
+        #expected = {'multiattach': volume.multiattach,
+        #            'status': (('available', 'in-use') if volume.multiattach
+        #                       else 'available')}
+        volumeObject = self._get_volume_(context, volume['id'])
+        expected = { 'status': 'available' }
+        result = volumeObject.conditional_update({'status': 'attaching'}, expected)
+
+        if not result:
+            expected_status = utils.build_or_str(expected['status'])
+            msg = _('Volume status must be %s to reserve.') % expected_status
             LOG.error(msg)
             raise exception.InvalidVolume(reason=msg)
+        LOG.info(_LI("Reserve volume completed successfully."),
+                 resource=volume)
 
     @wrap_check_policy
     def unreserve_volume(self, context, volume):
@@ -555,25 +560,27 @@ class API(base.Base):
             else:
                 self.update(context, volume, {"status": "available"})
 
+    # This conditional update is enough to ensure that there are no race conditions,
+    # unless we support multiattach
     @wrap_check_policy
     def begin_detaching(self, context, volume):
-        # If we are in the middle of a volume migration, we don't want the user
-        # to see that the volume is 'detaching'. Having 'migration_status' set
-        # will have the same effect internally.
-        if volume['migration_status']:
-            return
+        # If we are in the middle of a volume migration, we don't want the
+        # user to see that the volume is 'detaching'. Having
+        # 'migration_status' set will have the same effect internally.
+        volumeObject = self._get_volume_(context, volume['id'])
+        expected = {'status': 'in-use',
+                    'attach_status': 'attached',
+                    'migration_status': self.AVAILABLE_MIGRATION_STATUS}
+        result = volumeObject.conditional_update({'status': 'detaching'}, expected)
 
-        if (volume['status'] != 'in-use' or
-                volume['attach_status'] != 'attached'):
-            msg = (_("Unable to detach volume. Volume status must be 'in-use' "
-                     "and attach_status must be 'attached' to detach. "
-                     "Currently: status: '%(status)s', "
-                     "attach_status: '%(attach_status)s.'") %
-                   {'status': volume['status'],
-                    'attach_status': volume['attach_status']})
+        if not (result or self._is_volume_migrating(volume)):
+            msg = _("Unable to detach volume. Volume status must be 'in-use' "
+                    "and attach_status must be 'attached' to detach.")
             LOG.error(msg)
             raise exception.InvalidVolume(reason=msg)
-        self.update(context, volume, {"status": "detaching"})
+
+        LOG.info(_LI("Begin detaching volume completed successfully."),
+                 resource=volume)
 
     @wrap_check_policy
     def roll_detaching(self, context, volume):

@@ -27,6 +27,7 @@ import oslo_messaging as messaging
 from oslo_utils import timeutils
 import six
 
+from cinder import db
 from cinder import context
 from cinder import exception
 from cinder.i18n import _, _LE
@@ -34,7 +35,7 @@ from cinder import objects
 from cinder.objects import fields
 from cinder.openstack.common import versionutils
 from cinder import utils
-
+from cinder.db.sqlalchemy import models
 
 LOG = logging.getLogger('object')
 
@@ -555,6 +556,47 @@ class CinderObject(object):
     def obj_fields(self):
         return self.fields.keys() + self.obj_extra_fields
 
+    # Not supporting case and not as of now. Chirag
+    def conditional_update(self, values, expected_values=None):
+        """Compare-and-swap update.
+
+           A conditional object update that, unlike normal update, will SAVE
+           the contents of the update to the DB.
+
+           Update will only occur in the DB and the object if conditions are
+           met.
+
+           We have 1 different condition types we can use in expected_values:
+            - Equality:  {'status': 'available'}
+
+           :param values: Dictionary of key-values to update in the DB.
+           :param expected_values: Dictionary of conditions that must be met
+                                   for the update to be executed.
+           :returns number of db rows that were updated, which can be used as a
+                    boolean, since it will be 0 if we couldn't update the DB
+                    and 1 if we could, because we are using unique index id.
+        """
+
+        # Set the id in expected_values to limit conditional update to only
+        # change this object
+        expected = expected_values.copy()
+        expected['id'] = self.id
+
+        model_name = self.obj_name()
+        model = getattr(models, model_name)
+
+        result = db.conditional_update(self._context, model, values, expected)
+
+        # If we were able to update the DB then we need to update this object
+        # as well to reflect new DB contents and clear the object's dirty flags
+        # for those fields.
+        if result:
+            # NOTE(geguileo): We don't use update method because our objects
+            # will eventually move away from VersionedObjectDictCompat
+            for key, value in values.items():
+                setattr(self, key, value)
+            self.obj_reset_changes(values.keys())
+        return result
 
 class CinderObjectDictCompat(object):
     """Mix-in to provide dictionary key access compat

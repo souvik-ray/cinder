@@ -985,3 +985,63 @@ def driver_initiator_data_update(context, initiator, namespace, updates):
 def driver_initiator_data_get(context, initiator, namespace):
     """Query for an DriverPrivateData that has the specified key"""
     return IMPL.driver_initiator_data_get(context, initiator, namespace)
+
+class Condition(object):
+    """Class for normal condition values for conditional_update."""
+    def __init__(self, value, field=None):
+        self.value = value
+        # Field is optional and can be passed when getting the filter
+        self.field = field
+
+    def get_filter(self, model, field=None):
+        return IMPL.condition_db_filter(model, self._get_field(field),
+                                        self.value)
+
+    def _get_field(self, field=None):
+        # We must have a defined field on initialization or when called
+        field = field or self.field
+        if not field:
+            raise ValueError(_('Condition has no field.'))
+        return field
+
+def conditional_update(context, model, values, expected_values, filters=(),
+                       include_deleted='no', project_only=False):
+    """Compare-and-swap conditional update.
+
+       Update will only occur in the DB if conditions are met.
+
+       We have 1 different condition types we can use in expected_values:
+        - Equality:  {'status': 'available'}
+
+       Method accepts additional filters, which are basically anything that
+       can be passed to a sqlalchemy query's filter method, for example:
+       [~sql.exists().where(models.Volume.id == models.Snapshot.volume_id)]
+
+       And we can use DB fields for example to store previous status in the
+       corresponding field even though we don't know which value is in the db
+       from those we allowed:
+       db.conditional_update(context, models.Volume,
+                             {'status': 'deleting',
+                              'previous_status': models.Volume.status},
+                             {'status': ('available', 'error')})
+
+       WARNING: SQLAlchemy does not allow selecting order of SET clauses, so
+       for now we cannot do things like
+           {'previous_status': model.status, 'status': 'retyping'}
+       because it will result in both previous_status and status being set to
+       'retyping'.  Issue has been reported [1] and a patch to fix it [2] has
+       been submitted.
+       [1]: https://bitbucket.org/zzzeek/sqlalchemy/issues/3541/
+       [2]: https://github.com/zzzeek/sqlalchemy/pull/200
+
+       :param values: Dictionary of key-values to update in the DB.
+       :param expected_values: Dictionary of conditions that must be met
+                               for the update to be executed.
+       :param filters: Iterable with additional filters
+       :param include_deleted: Should the update include deleted items, this
+                               is equivalent to read_deleted
+       :param project_only: Should the query be limited to context's project.
+       :returns number of db rows that were updated
+    """
+    return IMPL.conditional_update(context, model, values, expected_values,
+                                   filters, include_deleted, project_only)
