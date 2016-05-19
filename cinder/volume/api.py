@@ -33,6 +33,7 @@ from oslo_utils import encodeutils
 import six
 
 from cinder import context
+from cinder import db 
 from cinder.db import base
 from cinder import exception
 from cinder import flow_utils
@@ -551,14 +552,16 @@ class API(base.Base):
 
     @wrap_check_policy
     def unreserve_volume(self, context, volume):
-        volume = self.db.volume_get(context, volume['id'])
-        if volume['status'] == 'attaching':
-            attaches = self.db.volume_attachment_get_used_by_volume_id(
-                context, volume['id'])
-            if attaches:
-                self.update(context, volume, {"status": "in-use"})
-            else:
-                self.update(context, volume, {"status": "available"})
+        volumeObject = self._get_volume_(context, volume['id'])
+        expected = {'status': 'attaching'}
+        # Status change depends on whether it has attachments (in-use) or not
+        # (available)
+        value = {'status': db.Case([(db.volume_has_attachments_filter(),
+                                     'in-use')],
+                                   else_='available')}
+        volumeObject.conditional_update(value, expected)
+        LOG.info(_LI("Unreserve volume completed successfully."),
+                 resource=volume)
 
     # This conditional update is enough to ensure that there are no race conditions,
     # unless we support multiattach
@@ -573,7 +576,8 @@ class API(base.Base):
                     'migration_status': self.AVAILABLE_MIGRATION_STATUS}
         result = volumeObject.conditional_update({'status': 'detaching'}, expected)
 
-        if not (result or self._is_volume_migrating(volume)):
+        #if not (result or self._is_volume_migrating(volume)):
+        if not (result):
             msg = _("Unable to detach volume. Volume status must be 'in-use' "
                     "and attach_status must be 'attached' to detach.")
             LOG.error(msg)
@@ -584,8 +588,11 @@ class API(base.Base):
 
     @wrap_check_policy
     def roll_detaching(self, context, volume):
-        if volume['status'] == "detaching":
-            self.update(context, volume, {"status": "in-use"})
+        volumeObject = self._get_volume_(context, volume['id'])
+        volumeObject.conditional_update({'status': 'in-use'},
+                                        {'status': 'detaching'})
+        LOG.info(_LI("Roll detaching of volume completed successfully."),
+                 resource=volume)
 
     @ReportMetrics("volume-api-attach")
     @wrap_check_policy
