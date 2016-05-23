@@ -188,7 +188,7 @@ class InvalidVolumeType(Invalid):
 
 
 class InvalidVolume(Invalid):
-    message = _("Invalid volume: %(reason)s")
+    message = _("%(reason)s")
 
 
 class InvalidContentType(Invalid):
