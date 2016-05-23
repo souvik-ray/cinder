@@ -340,6 +340,17 @@ class API(base.Base):
             msg = _("Volume still has %d dependent "
                     "snapshots.") % len(snapshots)
             raise exception.InvalidVolume(reason=msg)
+        backups = self.db.backup_get_all_by_volume(context.elevated(), volume_id)
+        if len(backups):
+            for backup in backups:
+                if backup['status'] == 'creating':
+                    LOG.info(_LI('Unable to delete volume: %s, '
+                                 'volume has snapshot %s in creating state.'), volume['id'],
+                                  backup['id'])
+                    msg = (_("Volume still has %s snapshot in creating state")
+                            % backup['id'])
+
+		    raise exception.InvalidVolume(reason=msg)
 
         # If the volume is encrypted, delete its encryption key from the key
         # manager. This operation makes volume deletion an irreversible process
