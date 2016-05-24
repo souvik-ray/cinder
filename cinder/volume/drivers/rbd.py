@@ -33,6 +33,7 @@ from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
 from cinder.openstack.common import fileutils
 from cinder.volume import driver
+from cinder.api.metricutil import ReportMetrics
 
 try:
     import rados
@@ -294,10 +295,11 @@ class RBDDriver(driver.VolumeDriver):
         # so no need to check for self.rados.Error here.
         with RADOSClient(self):
             pass
-
+    @ReportMetrics("rbd-proxy")
     def RBDProxy(self):
         return tpool.Proxy(self.rbd.RBD())
 
+    @ReportMetrics("rbd-del-proxy")
     def RBDDELProxy(self):
         return dpool.Proxy(self.rbd.RBD())
 
@@ -309,6 +311,7 @@ class RBDDriver(driver.VolumeDriver):
             args.extend(['--conf', self.configuration.rbd_ceph_conf])
         return args
 
+    @ReportMetrics("rbd-connect-to-rados", True)
     def _connect_to_rados(self, pool=None):
         LOG.debug("opening connection to ceph cluster (timeout=%s)." %
                   (self.configuration.rados_connect_timeout))
@@ -340,6 +343,7 @@ class RBDDriver(driver.VolumeDriver):
             client.shutdown()
             raise exception.VolumeBackendAPIException(data=msg)
 
+    @ReportMetrics("rbd-disconnect-from-rados", True)
     def _disconnect_from_rados(self, client, ioctx):
         # closing an ioctx cannot raise an exception
         ioctx.close()
@@ -358,6 +362,7 @@ class RBDDriver(driver.VolumeDriver):
         from cinder.backup.drivers import sbs
         return sbs.SBSBackupDriver.get_backup_snaps(rbd_image)
 
+    @ReportMetrics("rbd-get-mon-addrs", True)
     def _get_mon_addrs(self):
         args = ['ceph', 'mon', 'dump', '--format=json']
         args.extend(self._ceph_args())
@@ -376,6 +381,8 @@ class RBDDriver(driver.VolumeDriver):
             ports.append(port)
         return hosts, ports
 
+
+    @ReportMetrics("rbd-update-volume-stats", True)
     def _update_volume_stats(self):
         stats = {
             'vendor_name': 'Open Source',
@@ -525,6 +532,7 @@ class RBDDriver(driver.VolumeDriver):
 
         LOG.debug("clone created successfully")
 
+    @ReportMetrics("rbd-create-volume", True)
     def create_volume(self, volume):
         """Creates a logical volume."""
         size = int(volume['size']) * units.Gi
@@ -578,6 +586,7 @@ class RBDDriver(driver.VolumeDriver):
         if int(volume['size']):
             self._resize(volume)
 
+    @ReportMetrics("rbd-delete-backup-snaps", True)
     def _delete_backup_snaps(self, rbd_image, volume_name, context):
         backup_snaps = self._get_backup_snaps(rbd_image)
         if backup_snaps:
@@ -654,6 +663,7 @@ class RBDDriver(driver.VolumeDriver):
             if g_parent:
                 self._delete_clone_parent_refs(client, g_parent, g_parent_snap)
 
+    @ReportMetrics("rbd-delete-volume", True)
     def delete_volume(self, volume, context):
         """Deletes a logical volume."""
         # NOTE(dosaboy): this was broken by commit cbe1d5f. Ensure names are
@@ -661,6 +671,7 @@ class RBDDriver(driver.VolumeDriver):
         volume_name = encodeutils.safe_encode(volume['name'])
         with RADOSClient(self) as client:
             try:
+                # TODO: (souvik) find the declration and add metrics....
                 rbd_image = self.rbd.Image(client.ioctx, volume_name)
             except self.rbd.ImageNotFound:
                 LOG.info(_LI("volume %s no longer exists in backend")
@@ -697,6 +708,8 @@ class RBDDriver(driver.VolumeDriver):
                 LOG.debug("deleting rbd volume %s" % (volume_name))
                 try:
                     self.RBDDELProxy().remove(client.ioctx, volume_name)
+                    LOG.debug("rbd volume %s deletion is completed" % (volume_name))
+
                 except self.rbd.ImageBusy:
                     msg = (_("ImageBusy error raised while deleting rbd "
                              "volume. This may have been caused by a "
@@ -782,6 +795,7 @@ class RBDDriver(driver.VolumeDriver):
         """Removes an export for a logical volume."""
         pass
 
+    @ReportMetrics("rbd-initialize_connection", True)
     def initialize_connection(self, volume, connector):
         hosts, ports = self._get_mon_addrs()
         data = {
@@ -799,6 +813,7 @@ class RBDDriver(driver.VolumeDriver):
         LOG.debug('connection data: %s', data)
         return data
 
+    @ReportMetrics("rbd-terminate_connection", True)
     def terminate_connection(self, volume, connector, **kwargs):
         pass
 
@@ -917,6 +932,7 @@ class RBDDriver(driver.VolumeDriver):
                                       image_meta, tmp_file)
         os.unlink(tmp_file)
 
+    @ReportMetrics("rbd-backup-volume", True)
     def backup_volume(self, context, backup, backup_service):
         """Create a new backup from an existing volume."""
         volume = self.db.volume_get(context, backup['volume_id'])
@@ -931,6 +947,7 @@ class RBDDriver(driver.VolumeDriver):
 
         LOG.debug("volume backup complete.")
 
+    @ReportMetrics("rbd-restore-backup", True)
     def restore_backup(self, context, backup, volume, backup_service):
         """Restore an existing backup to a new or existing volume."""
         with RBDVolumeProxy(self, volume['name'],

@@ -28,6 +28,7 @@ from cinder import objects
 from cinder import utils
 from cinder.volume.flows import common
 from cinder.volume import utils as volume_utils
+from cinder.api.metricutil import MetricUtil
 
 LOG = logging.getLogger(__name__)
 
@@ -693,9 +694,10 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
         volume_id = volume['id']
         new_status = self.status_translation.get(volume_spec.get('status'),
                                                  'available')
+        launched_at = timeutils.utcnow()
         update = {
             'status': new_status,
-            'launched_at': timeutils.utcnow(),
+            'launched_at': launched_at,
         }
         try:
             # TODO(harlowja): is it acceptable to only log if this fails??
@@ -703,8 +705,11 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
             # status isn't updated correctly (aka it will likely be stuck in
             # 'building' if this fails)??
             volume_ref = self.db.volume_update(context, volume_id, update)
+            created_at = volume_ref['created_at']
+            MetricUtil().report_timing_metric_utc_time("CreatingToAvailable", launched_at, created_at)
             # Now use the parent to notify.
             super(CreateVolumeOnFinishTask, self).execute(context, volume_ref)
+
         except exception.CinderException:
             LOG.exception(_LE("Failed updating volume %(volume_id)s with "
                               "%(update)s"), {'volume_id': volume_id,
