@@ -27,6 +27,7 @@ import oslo_messaging as messaging
 from oslo_utils import timeutils
 import six
 
+from cinder import db
 from cinder import context
 from cinder import exception
 from cinder.i18n import _, _LE
@@ -34,7 +35,7 @@ from cinder import objects
 from cinder.objects import fields
 from cinder.openstack.common import versionutils
 from cinder import utils
-
+from cinder.db.sqlalchemy import models
 
 LOG = logging.getLogger('object')
 
@@ -268,6 +269,9 @@ class CinderObject(object):
     #   will remove both subobject1 and subobject2 from the primitive,
     #   since they were not added until version 1.2.
     obj_relationships = {}
+
+    Not = db.Not
+    Case = db.Case
 
     def __init__(self, context=None, **kwargs):
         self._changed_fields = set()
@@ -555,6 +559,97 @@ class CinderObject(object):
     def obj_fields(self):
         return self.fields.keys() + self.obj_extra_fields
 
+    def conditional_update(self, values, expected_values=None, filters=(),
+                           save_all=False, session=None, reflect_changes=True):
+        """Compare-and-swap update.
+
+           A conditional object update that, unlike normal update, will SAVE
+           the contents of the update to the DB.
+
+           Update will only occur in the DB and the object if conditions are
+           met.
+
+           If no expected_values are passed in we will default to make sure
+           that all fields have not been changed in the DB. Since we cannot
+           know the original value in the DB for dirty fields in the object
+           those will be excluded.
+
+           We have 4 different condition types we can use in expected_values:
+            - Equality:  {'status': 'available'}
+            - Inequality: {'status': vol_obj.Not('deleting')}
+            - In range: {'status': ['available', 'error']
+            - Not in range: {'status': vol_obj.Not(['in-use', 'attaching'])
+
+           Method accepts additional filters, which are basically anything that
+           can be passed to a sqlalchemy query's filter method, for example:
+           [~sql.exists().where(models.Volume.id == models.Snapshot.volume_id)]
+
+           We can select values based on conditions using Case objects in the
+           'values' argument. For example:
+           has_snapshot_filter = sql.exists().where(
+               models.Snapshot.volume_id == models.Volume.id)
+           case_values = volume.Case([(has_snapshot_filter, 'has-snapshot')],
+                                     else_='no-snapshot')
+           volume.conditional_update({'status': case_values},
+                                     {'status': 'available'}))
+
+            And we can use DB fields using model class attribute for example to
+            store previous status in the corresponding field even though we
+            don't know which value is in the db from those we allowed:
+            volume.conditional_update({'status': 'deleting',
+                                       'previous_status': volume.model.status},
+                                      {'status': ('available', 'error')})
+
+           :param values: Dictionary of key-values to update in the DB.
+           :param expected_values: Dictionary of conditions that must be met
+                                   for the update to be executed.
+           :param filters: Iterable with additional filters
+           :param save_all: Object may have changes that are not in the DB,
+                            this will say whether we want those changes saved
+                            as well.
+           :param session: Session to use for the update
+           :param reflect_changes: If we want changes made in the database to
+                                   be reflected in the versioned object.  This
+                                   may mean in some cases that we have to
+                                   reload the object from the database.
+           :returns number of db rows that were updated, which can be used as a
+                    boolean, since it will be 0 if we couldn't update the DB
+                    and 1 if we could, because we are using unique index id.
+        """
+
+        # Set the id in expected_values to limit conditional update to only
+        # change this object
+        expected = expected_values.copy()
+        expected['id'] = self.id
+
+        model_name = self.obj_name()
+        model = getattr(models, model_name)
+
+        result = db.conditional_update(self._context, model, values,
+                                       expected, filters)
+
+        # If we were able to update the DB then we need to update this object
+        # as well to reflect new DB contents and clear the object's dirty flags
+        # for those fields.
+        if result and reflect_changes:
+            # If we have used a Case, a db field or an expression in values we
+            # don't know which value was used, so we need to read the object
+            # back from the DB
+            if any(isinstance(v, self.Case) or db.is_orm_value(v)
+                   for v in values.values()):
+                # Read back object from DB
+                obj = type(self).get_by_id(self._context, self.id)
+                db_values = obj.obj_to_primitive()
+                # Only update fields were changes were requested
+                values = {field: db_values[field]
+                          for field, value in values.items()}
+
+            # NOTE(geguileo): We don't use update method because our objects
+            # will eventually move away from VersionedObjectDictCompat
+            for key, value in values.items():
+                setattr(self, key, value)
+            self.obj_reset_changes(values.keys())
+        return result
 
 class CinderObjectDictCompat(object):
     """Mix-in to provide dictionary key access compat
