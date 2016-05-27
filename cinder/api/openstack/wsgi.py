@@ -977,7 +977,11 @@ class Resource(wsgi.Application):
         #            function.  If we try to audit __call__(), we can
         #            run into troubles due to the @webob.dec.wsgify()
         #            decorator.
-        return self._process_stack(request, action, action_args,
+        success = 0
+        error = 0
+        fault = 0
+        try:
+            response = self._process_stack(request, action, action_args,
                                    content_type, body, accept)
             success = 1
         except Exception as e:
