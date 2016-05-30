@@ -29,7 +29,7 @@ from cinder import utils
 from cinder.volume.flows import common
 from cinder.volume import utils as volume_utils
 from cinder.api.metricutil import MetricUtil
-
+import datetime
 LOG = logging.getLogger(__name__)
 
 ACTION = 'volume:create'
@@ -694,7 +694,7 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
         volume_id = volume['id']
         new_status = self.status_translation.get(volume_spec.get('status'),
                                                  'available')
-        launched_at = timeutils.utcnow()
+        launched_at = datetime.datetime.now()
         update = {
             'status': new_status,
             'launched_at': launched_at,
