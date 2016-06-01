@@ -36,12 +36,14 @@ from cinder.common import config  # noqa
 from cinder import service
 from cinder import utils
 from cinder import version
+from cinder import objects
 
 
 CONF = cfg.CONF
 
 
 def main():
+    objects.register_all() 
     CONF(sys.argv[1:], project='cinder',
          version=version.version_string())
     logging.setup(CONF, "cinder")

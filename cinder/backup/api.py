@@ -27,10 +27,12 @@ from oslo_utils import excutils
 
 from cinder.backup import rpcapi as backup_rpcapi
 from cinder import context
+from cinder import db 
 from cinder.db import base
 from cinder import exception
 from cinder.i18n import _, _LI, _LW
 import cinder.policy
+from cinder import objects 
 from cinder import quota
 from cinder import utils
 import cinder.volume
@@ -131,6 +133,9 @@ class API(base.Base):
             msg = _('Volume status is in-use.')
             raise exception.InvalidVolume(reason=msg)
 
+    def _get_volume_(self, context, volume_id):
+        return objects.Volume.get_by_id(context, volume_id)
+
     @ReportMetrics("backup-api-create")
     def create(self, context, name, description, volume_id,
                container, force, incremental=False, availability_zone=None):
@@ -206,9 +211,21 @@ class API(base.Base):
             if msg is not None:
                 raise exception.BackupOperationError(reason=msg)
 
-        orig_status = volume['status']
-        new_status = 'backing-up-' + orig_status
-        self.db.volume_update(context, volume_id, {'status': new_status})
+        volumeObject = self._get_volume_(context, volume['id'])
+        expected = {'status': ('available', 'in-use')}
+
+        # Status change depends on whether it has attachments (in-use) or not
+        # (available)
+        value = {'status': db.Case([(db.volume_has_attachments_filter(),
+                                     'backing-up-in-use')],
+                                   else_='backing-up-available')}
+        result = volumeObject.conditional_update(value, expected)
+        if not result:
+            QUOTAS.rollback(context, reservations)
+            msg = _("Unable to create snapshot of the volume. Volume status must be 'available/in-use'.")
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
         options = {'user_id': context.user_id,
                    'project_id': context.project_id,
                    'display_name': name,
@@ -226,7 +243,15 @@ class API(base.Base):
             with excutils.save_and_reraise_exception():
                 try:
                     self.db.backup_destroy(context, backup['id'])
-                    self.db.volume_update(context, volume_id, {'status': orig_status})
+                    volumeObject = self._get_volume_(context, volume['id'])
+                    expected = {'status': ('backing-up-available', 'backing-up-in-use')}
+
+                    # Status change depends on whether it has attachments (in-use) or not
+                    # (available)
+                    value = {'status': db.Case([(db.volume_has_attachments_filter(),
+                                                 'in-use')],
+                                                else_='available')}
+                    volumeObject.conditional_update(value, expected)
                 finally:
                     QUOTAS.rollback(context, reservations)
 
@@ -237,7 +262,7 @@ class API(base.Base):
                                          backup['host'],
                                          backup['id'],
                                          volume_id,
-                                         orig_status)
+                                         'available')
 
         return backup
 

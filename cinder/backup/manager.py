@@ -49,6 +49,8 @@ from cinder import manager
 from cinder import quota
 from cinder import rpc
 from cinder import utils
+from cinder import objects 
+from cinder import db 
 from cinder.volume import utils as volume_utils
 from cinder.api.metricutil import CinderBackupMetricsWrapper
 
@@ -241,6 +243,21 @@ class BackupManager(manager.SchedulerDependentManager):
                 LOG.info(_LI('Resuming delete on backup: %s.'), backup['id'])
                 self.delete_backup(ctxt, backup['id'])
 
+    def _get_volume_(self, context, volume_id):                                                   
+        return objects.Volume.get_by_id(context, volume_id)                                       
+    
+    def _revert_volume_state_(self, context, volume_id):
+        volumeObject = self._get_volume_(context, volume_id)
+        expected = {'status': ('backing-up-available', 'backing-up-in-use')}
+
+        # Status change depends on whether it has attachments (in-use) or not
+        # (available)
+        value = {'status': db.Case([(db.volume_has_attachments_filter(),
+                                    'in-use')],
+                                   else_='available')}
+        result = volumeObject.conditional_update(value, expected)
+        return result
+
     @CinderBackupMetricsWrapper(operation_name="cinder-backup-create")
     def create_backup(self, context, backup_id, orig_status='available'):
         """Create volume backups using configured backup service."""
@@ -279,7 +296,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 'expected_status': expected_status,
                 'actual_status': actual_status,
             }
-            self.db.volume_update(context, volume_id, {'status': orig_status})
+            self._revert_volume_state_(context, volume_id)
             self.db.backup_update(context, backup_id, {'status': 'error',
                                                        'fail_reason': err})
             raise exception.InvalidBackup(reason=err)
@@ -296,13 +313,12 @@ class BackupManager(manager.SchedulerDependentManager):
                                                     backup_service)
         except Exception as err:
             with excutils.save_and_reraise_exception():
-                self.db.volume_update(context, volume_id,
-                                      {'status': orig_status})
+                self._revert_volume_state_(context, volume_id)
                 self.db.backup_update(context, backup_id,
                                       {'status': 'error',
                                        'fail_reason': six.text_type(err)})
 
-        self.db.volume_update(context, volume_id, {'status': orig_status})
+        self._revert_volume_state_(context, volume_id)
         backup = self.db.backup_update(context, backup_id,
                                        {'status': 'available',
                                         'size': volume['size'],

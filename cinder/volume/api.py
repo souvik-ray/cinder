@@ -543,8 +543,7 @@ class API(base.Base):
         result = volumeObject.conditional_update({'status': 'attaching'}, expected)
 
         if not result:
-            expected_status = utils.build_or_str(expected['status'])
-            msg = _('Volume status must be %s to reserve.') % expected_status
+            msg = _("Unable to reserve volume. Volume status must be 'available' to reserve.")
             LOG.error(msg)
             raise exception.InvalidVolume(reason=msg)
         LOG.info(_LI("Reserve volume completed successfully."),
@@ -559,7 +558,10 @@ class API(base.Base):
         value = {'status': db.Case([(db.volume_has_attachments_filter(),
                                      'in-use')],
                                    else_='available')}
-        volumeObject.conditional_update(value, expected)
+        result = volumeObject.conditional_update(value, expected)
+        if not result:
+            msg = _("Unable to unreserve volume. Volume status must be 'attaching' to unreserve.")
+            LOG.error(msg)
         LOG.info(_LI("Unreserve volume completed successfully."),
                  resource=volume)
 
@@ -589,8 +591,11 @@ class API(base.Base):
     @wrap_check_policy
     def roll_detaching(self, context, volume):
         volumeObject = self._get_volume_(context, volume['id'])
-        volumeObject.conditional_update({'status': 'in-use'},
+        result = volumeObject.conditional_update({'status': 'in-use'},
                                         {'status': 'detaching'})
+        if not (result):
+            msg = _("Unable to roll detach volume. Volume status must be 'detaching'.")
+            LOG.error(msg)
         LOG.info(_LI("Roll detaching of volume completed successfully."),
                  resource=volume)
 
