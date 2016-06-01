@@ -534,7 +534,7 @@ class Backup(BASE, CinderBase):
     object_count = Column(Integer)
     time_stamp = Column(String(255))
     version = Column(Float(precision='3,1'))
-    actual_size = Column(Integer)
+    actual_size = Column(Integer(32))
 
     @validates('fail_reason')
     def validate_fail_reason(self, key, fail_reason):

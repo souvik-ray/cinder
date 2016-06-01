@@ -27,7 +27,7 @@ def upgrade(migrate_engine):
     meta.bind = migrate_engine
 
     backups = Table('backups', meta, autoload=True)
-    actual_size = Column('actual_size', Integer())
+    actual_size = Column('actual_size', Integer(32))
 
     try:
         backups.create_column(actual_size)
