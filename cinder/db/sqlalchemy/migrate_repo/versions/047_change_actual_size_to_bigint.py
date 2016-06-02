@@ -15,7 +15,7 @@
 # Copyright (c) 2016 Shishir Gowda <shishir.gowda@ril.com>
 
 from oslo_log import log as logging
-from sqlalchemy import Column, MetaData, Table, Float, Integer
+from sqlalchemy import Column, MetaData, Table, Float, Integer, BigInteger
 
 from cinder.i18n import _LE
 
@@ -27,13 +27,11 @@ def upgrade(migrate_engine):
     meta.bind = migrate_engine
 
     backups = Table('backups', meta, autoload=True)
-    actual_size = Column('actual_size', Integer())
 
     try:
-        backups.create_column(actual_size)
-        backups.update().values(actual_size=None).execute()
+        backups.c.actual_size.alter(BigInteger())
     except Exception:
-        LOG.error(_LE("Adding actual_size column to backups table failed."))
+        LOG.error(_LE("Changing actual_size to BigInt failed for  backups."))
         raise
 
 
@@ -42,10 +40,9 @@ def downgrade(migrate_engine):
     meta.bind = migrate_engine
 
     backups = Table('backups', meta, autoload=True)
-    actual_size = backups.columns.actual_size
 
     try:
-        backups.drop_column(actual_size)
+        backups.c.actual_size.alter(Integer())
     except Exception:
-        LOG.error(_LE("Dropping actual_size column from backups table failed."))
+        LOG.error(_LE("Changing actual_size from BigInt to Int from backups table failed."))
         raise

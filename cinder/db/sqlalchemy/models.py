@@ -24,7 +24,7 @@ from datetime import datetime
 from oslo_config import cfg
 from oslo_db.sqlalchemy import models
 from oslo_utils import timeutils
-from sqlalchemy import Column, Integer, String, Text, schema, Float
+from sqlalchemy import Column, Integer, String, Text, schema, Float, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import ForeignKey, DateTime, Boolean
 from sqlalchemy.orm import relationship, backref, validates
@@ -534,7 +534,7 @@ class Backup(BASE, CinderBase):
     object_count = Column(Integer)
     time_stamp = Column(String(255))
     version = Column(Float(precision='3,1'))
-    actual_size = Column(Integer(32))
+    actual_size = Column(BigInteger())
 
     @validates('fail_reason')
     def validate_fail_reason(self, key, fail_reason):
