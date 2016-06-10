@@ -71,6 +71,7 @@ from cinder.volume import volume_types
 from cinder.api.metricutil import CinderVolumeMetricsWrapper, MetricUtil
 
 from eventlet import greenpool
+import datetime
 
 LOG = logging.getLogger(__name__)
 
@@ -590,7 +591,7 @@ class VolumeManager(manager.SchedulerDependentManager):
 
             self.db.volume_destroy(context, volume_id)
             terminated_at = volume_ref['terminated_at']
-            now = timeutils.utcnow()
+            now = datetime.datetime.now()
             MetricUtil().report_timing_metric_utc_time("TerminatingToDeleted", now, terminated_at)
             LOG.info(_LI("volume %s: deleted successfully"), volume_ref['id'])
 

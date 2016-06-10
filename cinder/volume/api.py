@@ -53,6 +53,7 @@ from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import utils as volume_utils
 from cinder.volume import volume_types
 from cinder.api.metricutil import ReportMetrics
+from sbsvolumeworkflowclient.cinderasyncvolumeclient import CinderAsyncVolumeClient
 
 volume_host_opt = cfg.BoolOpt('snapshot_same_host',
                               default=True,
@@ -67,6 +68,18 @@ az_cache_time_opt = cfg.IntOpt('az_cache_duration',
                                help='Cache volume availability zones in '
                                     'memory for the provided duration in '
                                     'seconds')
+sbs_volume_async_host = cfg.StrOpt('sbs-volume-async-host',
+                                   default="sbsvolumeasynchost",
+                                   help='Host of SbsVolumeAsyncService')
+sbs_volume_async_port = cfg.IntOpt(9080,
+                                   default="sbsvolumeasyncport",
+                                   help='Port of SbsVolumeAsyncService')
+create_volume_new_customer_whitelist = cfg.StrOpt('create_volume_new_customer_whitelist',
+                                                  default="",
+                                                  help='List of whitelisted customers for new create workflow')
+delete_volume_new_customer_whitelist = cfg.StrOpt('delete_volume_new_customer_whitelist',
+                                                  default="",
+                                                  help='List of whitelisted customers for new delete workflow')
 
 rbd_opts = [
     cfg.StrOpt('rbd_pool',
@@ -90,6 +103,10 @@ CONF.register_opt(volume_host_opt)
 CONF.register_opt(volume_same_az_opt)
 CONF.register_opt(az_cache_time_opt)
 CONF.register_opts(rbd_opts, group="ceph")
+CONF.register_opt(sbs_volume_async_host)
+CONF.register_opt(sbs_volume_async_port)
+CONF.register_opt(create_volume_new_customer_whitelist)
+CONF.register_opt(delete_volume_new_customer_whitelist)
 
 CONF.import_opt('glance_core_properties', 'cinder.image.glance')
 
@@ -156,6 +173,9 @@ class API(base.Base):
         self.availability_zones = []
         self.availability_zones_last_fetched = None
         self.key_manager = keymgr.API()
+        host = CONF.sbs_volume_async_host
+        port = CONF.sbs_volume_async_port
+        self.cinder_async_volume_client = CinderAsyncVolumeClient(host, port)
         super(API, self).__init__(db_driver)
         self.vol_init()
 
@@ -289,10 +309,14 @@ class API(base.Base):
                                                             availability_zones,
                                                             create_what)
             else:
+                whitelisted_for_volume_async_service = self.__is_createvolume_whitelisted_for_volumeasyncservice(
+                    context.project_id, image_id, snapshot)
                 flow_engine = create_volume.get_flow(self.scheduler_rpcapi,
                                                      self.volume_rpcapi,
                                                      self.db,
                                                      self.image_service,
+                                                     self.cinder_async_volume_client,
+                                                     whitelisted_for_volume_async_service,
                                                      availability_zones,
                                                      create_what)
         except Exception:
@@ -306,6 +330,21 @@ class API(base.Base):
         with flow_utils.DynamicLogListener(flow_engine, logger=LOG):
             flow_engine.run()
             return flow_engine.storage.fetch('volume')
+
+    '''
+        This method determines whether to send the create calls to the new volume service.
+    '''
+    def __is_createvolume_whitelisted_for_volumeasyncservice(self, project_id, image_id, snapshot):
+        # Dont send cache volumes or boot volumes to new volume service
+        if not image_id and not snapshot:
+            whitelisted_customers_text = CONF.create_volume_new_customer_whitelist
+            if whitelisted_customers_text == "ALL":
+                return True
+            customers = whitelisted_customers_text.strip().split(',')
+            for customer in customers:
+                if customer == project_id:
+                    return True
+        return False
 
     @ReportMetrics("volume-api-delete")
     @wrap_check_policy
@@ -399,13 +438,35 @@ class API(base.Base):
         if encryption_key_id is not None:
             self.key_manager.delete_key(context, encryption_key_id)
 
-        now = timeutils.utcnow()
+        now = datetime.datetime.now()
         self.db.volume_update(context, volume_id, {'status': 'deleting',
                                                    'terminated_at': now})
 
-        self.volume_rpcapi.delete_volume(context, volume, unmanage_only)
-        LOG.info(_LI('Successfully issued request to '
-                     'delete volume: %s.'), volume['id'])
+        if self.__is_deletevolume_whitelisted_for_volumeasyncservice(volume):
+            volume_context = {"requestId", context.request_id}
+            self.cinder_async_volume_client.deleteVolume(volume_context, volume_id)
+            LOG.info(_LI("Create volume request issued successfully to VolumeAsyncService."),
+                     resource=vref)
+        else:
+            self.volume_rpcapi.delete_volume(context, volume, unmanage_only)
+            LOG.info(_LI("Delete volume request issued successfully to cinder-volume."),
+                     resource=vref)
+
+    '''
+    This method determines whether to send the create/delete calls to the new volume service.
+    '''
+
+    def __is_deletevolume_whitelisted_for_volumeasyncservice(self, volume):
+        # Dont send cache volumes to new volume service
+        if not volume['display_name'] and volume['display_name'].endswith('cache_volume'):
+            whitelisted_customers_text = CONF.delete_volume_new_customer_whitelist
+            if whitelisted_customers_text == "ALL":
+                return True
+            customers = whitelisted_customers_text.strip().split(',')
+            for customer in customers:
+                if customer == volume['project_id']:
+                    return True
+        return False
 
     @wrap_check_policy
     def update(self, context, volume, fields):
