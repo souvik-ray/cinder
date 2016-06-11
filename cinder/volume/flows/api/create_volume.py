@@ -818,12 +818,17 @@ class VolumeCastTask(flow_utils.CinderTask):
 
 class SbsVolumeAsyncClientTask(flow_utils.CinderTask):
     def __init__(self, cinder_async_volume_client):
+        requires = ['snapshot_id','volume_id']
+        super(SbsVolumeAsyncClientTask, self).__init__(addons=[ACTION],
+                                                        requires=requires)
         self.cinder_async_volume_client = cinder_async_volume_client
 
-    def execute(self, context, request_spec):
+    def execute(self, context, **kwargs):
+        request_spec = kwargs.copy()
         volume_context = {"requestId", context.request_id}
         volume_id = request_spec['volume_id']
-        self.cinder_async_volume_client.deleteVolume(volume_context, volume_id)
+        snapshot_id = request_spec['snapshot_id']
+        self.cinder_async_volume_client.createVolume(volume_context, volume_id, snapshot_id)
         LOG.info(_LE("Create volume request issued successfully to VolumeAsyncService."),
                 volume_id)
 

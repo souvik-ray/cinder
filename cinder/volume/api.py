@@ -445,20 +445,19 @@ class API(base.Base):
         if self.__is_deletevolume_whitelisted_for_volumeasyncservice(volume):
             volume_context = {"requestId", context.request_id}
             self.cinder_async_volume_client.deleteVolume(volume_context, volume_id)
-            LOG.info(_LI("Create volume request issued successfully to VolumeAsyncService."),
-                     resource=vref)
+            LOG.info(_LI("Delete volume request issued successfully to VolumeAsyncService."),
+                     volume['id'])
         else:
             self.volume_rpcapi.delete_volume(context, volume, unmanage_only)
             LOG.info(_LI("Delete volume request issued successfully to cinder-volume."),
-                     resource=vref)
+                     volume['id'])
 
     '''
     This method determines whether to send the create/delete calls to the new volume service.
     '''
-
     def __is_deletevolume_whitelisted_for_volumeasyncservice(self, volume):
         # Dont send cache volumes to new volume service
-        if not volume['display_name'] and volume['display_name'].endswith('cache_volume'):
+        if not volume['display_name'] or not volume['display_name'].endswith('cache_volume'):
             whitelisted_customers_text = CONF.delete_volume_new_customer_whitelist
             if whitelisted_customers_text == "ALL":
                 return True
