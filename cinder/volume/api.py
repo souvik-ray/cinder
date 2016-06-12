@@ -443,7 +443,7 @@ class API(base.Base):
                                                    'terminated_at': now})
 
         if self.__is_deletevolume_whitelisted_for_volumeasyncservice(volume):
-            volume_context = {"requestId", context.request_id}
+            volume_context = {"requestId": context.request_id, "projectId": context.project_id}
             self.cinder_async_volume_client.deleteVolume(volume_context, volume_id)
             LOG.info(_LI("Delete volume request issued successfully to VolumeAsyncService."),
                      volume['id'])

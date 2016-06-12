@@ -825,7 +825,7 @@ class SbsVolumeAsyncClientTask(flow_utils.CinderTask):
 
     def execute(self, context, **kwargs):
         request_spec = kwargs.copy()
-        volume_context = {"requestId", context.request_id, "projectId", context.project_id}
+        volume_context = {"requestId":context.request_id, "projectId": context.project_id}
         volume_id = request_spec['volume_id']
         snapshot_id = request_spec['snapshot_id']
         self.cinder_async_volume_client.createVolume(volume_context, volume_id, snapshot_id)
