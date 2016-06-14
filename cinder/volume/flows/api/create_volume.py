@@ -27,7 +27,6 @@ from cinder import quota
 from cinder import utils
 from cinder.volume.flows import common
 from cinder.volume import volume_types
-
 LOG = logging.getLogger(__name__)
 
 ACTION = 'volume:create'
@@ -817,10 +816,30 @@ class VolumeCastTask(flow_utils.CinderTask):
             exc_info = flow_failures[-1].exc_info
         LOG.error(_LE('Unexpected build error:'), exc_info=exc_info)
 
+class SbsVolumeAsyncClientTask(flow_utils.CinderTask):
+    def __init__(self, cinder_async_volume_client):
+        requires = ['snapshot_id','volume_id']
+        super(SbsVolumeAsyncClientTask, self).__init__(addons=[ACTION],
+                                                        requires=requires)
+        self.cinder_async_volume_client = cinder_async_volume_client
+
+    def execute(self, context, **kwargs):
+        request_spec = kwargs.copy()
+        volume_context = {"requestId":context.request_id, "projectId": context.project_id}
+        volume_id = request_spec['volume_id']
+        snapshot_id = request_spec['snapshot_id']
+        self.cinder_async_volume_client.createVolume(volume_context, volume_id, snapshot_id)
+        LOG.info(_LE("Create volume request issued successfully to VolumeAsyncService."),
+                volume_id)
+
+        def revert(self, context, result, flow_failures, **kwargs):
+            pass
+
 
 def get_flow(scheduler_rpcapi, volume_rpcapi, db_api,
-             image_service_api, availability_zones,
-             create_what):
+             image_service_api, cinder_async_volume_client,
+             whitelisted_for_volume_async_service,
+             availability_zones, create_what):
     """Constructs and returns the api entrypoint flow.
 
     This flow will do the following:
@@ -846,9 +865,12 @@ def get_flow(scheduler_rpcapi, volume_rpcapi, db_api,
                  EntryCreateTask(db_api),
                  QuotaCommitTask())
 
-    # This will cast it out to either the scheduler or volume manager via
-    # the rpc apis provided.
-    api_flow.add(VolumeCastTask(scheduler_rpcapi, volume_rpcapi, db_api))
+    if whitelisted_for_volume_async_service:
+        api_flow.add(SbsVolumeAsyncClientTask(cinder_async_volume_client))
+    else :
+        # This will cast it out to either the scheduler or volume manager via
+        # the rpc apis provided.
+        api_flow.add(VolumeCastTask(scheduler_rpcapi, volume_rpcapi, db_api))
 
     # Now load (but do not run) the flow using the provided initial data.
     return taskflow.engines.load(api_flow, store=create_what)
